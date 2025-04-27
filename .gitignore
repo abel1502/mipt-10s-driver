@@ -1,0 +1,8 @@
+/.vs
+/.vscode
+/x64
+# Dirty workaround, as there appears to be a bug with my git
+\x64
+
+*.vcxproj.filters
+*.vcxproj.user
