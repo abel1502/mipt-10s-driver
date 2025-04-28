@@ -209,7 +209,26 @@ void DProcMonOnCreateProcess(
     }
 
     struct LOG_QUEUE_DATA *data = ExAllocatePool2(POOL_FLAG_PAGED, sizeof(struct LOG_QUEUE_DATA), MEMORY_TAG);
-    data->CreatedProcessName[0] = 0; // TODO
+    // Note: we assume ascii process names, but if it isn't, we'll still handle it gracefully
+    ANSI_STRING createdProcessName;
+    NTSTATUS status = RtlUnicodeStringToAnsiString(&createdProcessName, CreateInfo->ImageFileName, TRUE);
+    if (!NT_SUCCESS(status)) {
+        DPROCMON_KDPRINT("Failed to convert process name to ANSI: %#08x", status);
+        return;
+    }
+
+    status = RtlStringCchCopyNA(
+        data->CreatedProcessName,
+        sizeof(data->CreatedProcessName) - 1,
+        createdProcessName.Buffer,
+        createdProcessName.Length
+    );
+    RtlFreeAnsiString(&createdProcessName);  // Regardless of success, we may free the old string now.
+    if (!NT_SUCCESS(status)) {
+        DPROCMON_KDPRINT("Failed to copy process name to buffer: %#08x", status);
+        return;
+    }
+	
     data->ProcessHandle = ProcessId;
     KeInsertQueue(&g_LogQueue, &data->ListEntry);
 

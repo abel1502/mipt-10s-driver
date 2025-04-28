@@ -73,7 +73,7 @@ VOID __cdecl main(
                 newline = FALSE;
             }
 
-            printf("> %s\n", message.CreatedProcessName);
+            printf("> %.*s\n", (int)sizeof(message.CreatedProcessName), message.CreatedProcessName);
 
             if (message.MoreAvailable) {
                 continue;
