@@ -17,7 +17,7 @@
 // transmitted via a callback.
 // Note that the second driver is still installed and
 // launched regardless of the value of this option
-#define USE_CALLBACK 1
+#define USE_CALLBACKS 0
 
 typedef CHAR PROCESS_NAME[0x100];
 
