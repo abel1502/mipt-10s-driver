@@ -19,11 +19,42 @@ struct LOG_QUEUE_ITEM {
 #endif
 
 
+#pragma region Minifilter
+void NTAPI DProcMonPortDisconnectNotify(
+    PVOID ConnectionCookie
+);
+
+NTSTATUS NTAPI DProcMonPortConnectNotify(
+    PFLT_PORT ClientPort,
+    PVOID ServerPortCookie,
+    PVOID ConnectionContext,
+    ULONG SizeOfContext,
+    PVOID *ConnectionCookie
+);
+
+NTSTATUS NTAPI DProcMonPortMessageNotify(
+    PVOID PortCookie,
+    PVOID InputBuffer,
+    ULONG InputBufferLength,
+    PVOID OutputBuffer,
+    ULONG OutputBufferLength,
+    ULONG *ReturnOutputBufferLength
+);
+#pragma endregion Minifilter
+
 DRIVER_INITIALIZE DriverEntry;
 
 _Dispatch_type_(IRP_MJ_CREATE)
 _Dispatch_type_(IRP_MJ_CLOSE)
 DRIVER_DISPATCH DProcMonCreateClose;
+
+NTSTATUS DProcMonReport(
+    ULONG InBufLength,
+    PVOID InBuf,
+    ULONG OutBufLength,
+    PVOID OutBuf,
+    ULONG *WrittenLength
+);
 
 _Dispatch_type_(IRP_MJ_DEVICE_CONTROL)
 DRIVER_DISPATCH DProcMonDeviceControl;

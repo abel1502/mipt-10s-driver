@@ -1,6 +1,7 @@
 #include <ntifs.h>
 #include <ntstrsafe.h>
 #include <ntddk.h>
+#include <fltKernel.h>
 #include <string.h>
 
 #include "driver.h"
@@ -11,6 +12,83 @@ static KQUEUE g_LogQueue;
 static volatile LONG g_LoqQueueSize;
 static volatile HANDLE g_LastReportedProcessID;
 
+#pragma region Minifilter
+static PFLT_FILTER g_FilterHandle = NULL;
+static PFLT_PORT g_ServerPort = NULL;
+static volatile PFLT_PORT g_ClientPort = NULL;
+
+static const FLT_OPERATION_REGISTRATION Callbacks[] = {
+    {IRP_MJ_OPERATION_END}
+};
+
+static const FLT_REGISTRATION FilterRegistration = {
+    sizeof(FLT_REGISTRATION),  // Size
+    FLT_REGISTRATION_VERSION,  // Version
+    0,                         // Flags
+    NULL,                      // Context
+    Callbacks,                 // Operation callbacks (none)
+    NULL,                      // MiniFilterUnload (optional, you can provide one)
+    NULL,                      // InstanceSetup
+    NULL,                      // InstanceQueryTeardown
+    NULL,                      // InstanceTeardownStart
+    NULL,                      // InstanceTeardownComplete
+    NULL,                      // GenerateFileName
+    NULL,                      // GenerateDestinationFileName
+    NULL                       // NormalizeNameComponent
+};
+
+void NTAPI DProcMonPortDisconnectNotify(
+    PVOID ConnectionCookie
+) {
+    UNREFERENCED_PARAMETER(ConnectionCookie);
+
+    PFLT_PORT clientPort = InterlockedExchangePointer(&g_ClientPort, NULL);
+    if (clientPort) {
+        FltCloseClientPort(g_FilterHandle, &clientPort);
+    }
+}
+
+NTSTATUS NTAPI DProcMonPortConnectNotify(
+    PFLT_PORT ClientPort,
+    PVOID ServerPortCookie,
+    PVOID ConnectionContext,
+    ULONG SizeOfContext,
+    PVOID *ConnectionCookie
+) {
+    UNREFERENCED_PARAMETER(ServerPortCookie);
+    UNREFERENCED_PARAMETER(ConnectionContext);
+    UNREFERENCED_PARAMETER(SizeOfContext);
+    UNREFERENCED_PARAMETER(ConnectionCookie);
+
+    PFLT_PORT OldClientPort = InterlockedCompareExchangePointer(&g_ClientPort, ClientPort, NULL);
+
+    if (OldClientPort != NULL) {
+        return STATUS_DEVICE_BUSY;
+    }
+
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS NTAPI DProcMonPortMessageNotify(
+    PVOID PortCookie,
+    PVOID InputBuffer,
+    ULONG InputBufferLength,
+    PVOID OutputBuffer,
+    ULONG OutputBufferLength,
+    ULONG *ReturnOutputBufferLength
+) {
+    UNREFERENCED_PARAMETER(PortCookie);
+
+    return DProcMonReport(
+        InputBufferLength,
+        InputBuffer,
+        OutputBufferLength,
+        OutputBuffer,
+        ReturnOutputBufferLength
+    );
+}
+#pragma endregion Minifilter
+
 
 NTSTATUS DriverEntry(
     _In_ PDRIVER_OBJECT DriverObject,
@@ -20,7 +98,7 @@ NTSTATUS DriverEntry(
 
     UNICODE_STRING ntUnicodeString = RTL_CONSTANT_STRING(NT_DEVICE_NAME);
 
-    PDEVICE_OBJECT deviceObject = NULL;  // ptr to device object
+    PDEVICE_OBJECT deviceObject = NULL;
     NTSTATUS ntStatus = IoCreateDevice(
         DriverObject,             // Our Driver Object
         0,                        // We don't use a device extension
@@ -71,6 +149,55 @@ NTSTATUS DriverEntry(
         return ntStatus;
     }
 
+    // Register a dummy filter
+    ntStatus = FltRegisterFilter(DriverObject, &FilterRegistration, &g_FilterHandle);
+    if (!NT_SUCCESS(ntStatus)) {
+        // Delete everything that this routine has allocated.
+        DPROCMON_KDPRINT("Couldn't register filter\n");
+        PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, TRUE);
+        IoDeleteSymbolicLink(&ntWin32NameString);
+        IoDeleteDevice(deviceObject);
+        return ntStatus;
+    }
+
+    UNICODE_STRING portName = RTL_CONSTANT_STRING(L"\\DProcMonPort");
+
+    OBJECT_ATTRIBUTES oa;
+    InitializeObjectAttributes(&oa, &portName, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
+
+    ntStatus = FltCreateCommunicationPort(
+        g_FilterHandle,
+        &g_ServerPort,
+        &oa,
+        NULL,
+        DProcMonPortConnectNotify,
+        DProcMonPortDisconnectNotify,
+        DProcMonPortMessageNotify,
+        1  // Max connections
+    );
+
+    if (!NT_SUCCESS(ntStatus)) {
+        // Delete everything that this routine has allocated.
+        DPROCMON_KDPRINT("Couldn't create filter communication port\n");
+        FltUnregisterFilter(g_FilterHandle);
+        PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, TRUE);
+        IoDeleteSymbolicLink(&ntWin32NameString);
+        IoDeleteDevice(deviceObject);
+        return ntStatus;
+    }
+
+    // Start the filter manager (we don't actually really filter anything)
+    ntStatus = FltStartFiltering(g_FilterHandle);
+    if (!NT_SUCCESS(ntStatus)) {
+        DPROCMON_KDPRINT("Couldn't start dummy filter\n");
+        FltCloseCommunicationPort(g_ServerPort);
+        FltUnregisterFilter(g_FilterHandle);
+        PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, TRUE);
+        IoDeleteSymbolicLink(&ntWin32NameString);
+        IoDeleteDevice(deviceObject);
+        return ntStatus;
+    }
+
     return STATUS_SUCCESS;
 }
 
@@ -81,6 +208,14 @@ VOID DProcMonUnloadDriver(
     PDEVICE_OBJECT deviceObject = DriverObject->DeviceObject;
 
     PAGED_CODE();
+
+    if (g_FilterHandle) {
+        FltUnregisterFilter(g_FilterHandle);
+    }
+
+    if (g_ServerPort) {
+        FltCloseCommunicationPort(g_ServerPort);
+    }
 
     PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, TRUE);
 
@@ -120,13 +255,6 @@ NTSTATUS DProcMonDeviceControl(
 
     PIO_STACK_LOCATION irpSp = IoGetCurrentIrpStackLocation(Irp);
 
-    ULONG inBufLength = irpSp->Parameters.DeviceIoControl.InputBufferLength;
-    ULONG outBufLength = irpSp->Parameters.DeviceIoControl.OutputBufferLength;
-    if (inBufLength < sizeof(struct DPROCMON_MESSAGE) || outBufLength < sizeof(struct DPROCMON_MESSAGE)) {
-        ntStatus = STATUS_INVALID_PARAMETER;
-        goto End;
-    }
-
     if (irpSp->Parameters.DeviceIoControl.IoControlCode != IOCTL_DPROCMON_GET_SPAWNED_PROCESSES) {
         ntStatus = STATUS_INVALID_DEVICE_REQUEST;
         DPROCMON_KDPRINT("ERROR: unrecognized IOCTL %#x\n", irpSp->Parameters.DeviceIoControl.IoControlCode);
@@ -138,43 +266,15 @@ NTSTATUS DProcMonDeviceControl(
     PrintIrpInfo(Irp);
     #endif
 
-    struct DPROCMON_MESSAGE *message = Irp->AssociatedIrp.SystemBuffer;
-
-    if (message->TerminateLast) {
-        DPROCMON_KDPRINT("Reqested termination of last reported process\n");
-        DPROCMON_KDPRINT("(Not yet implemented, ignored)\n");
-
-        HANDLE ProcessID = InterlockedExchangePointer(&g_LastReportedProcessID, NULL);
-        
-        // If the process is already dead, this isn't an error.
-        ntStatus = DProcMonTerminateProcess(ProcessID);
-
-        message->TerminateLast = FALSE;
-    }
-
-    RtlZeroMemory(message, sizeof(*message));
-
-    PLIST_ENTRY listEntry = MyKeRemoveQueue(&g_LogQueue);
-    if (!listEntry) {
-        message->CreatedProcessName[0] = 0;
-        message->MoreAvailable = FALSE;
-
-        ntStatus = STATUS_NO_MORE_ENTRIES;
-        goto End;
-    }
-
-    struct LOG_QUEUE_DATA *data = CONTAINING_RECORD(listEntry, struct LOG_QUEUE_DATA, ListEntry);
-
-    RtlCopyMemory(message->CreatedProcessName, data->CreatedProcessName, sizeof(data->CreatedProcessName));
-    InterlockedExchangePointer(&g_LastReportedProcessID, data->ProcessID);
-
-    ExFreePoolWithTag(data, MEMORY_TAG);
-
-    LONG remainingItems = InterlockedDecrement(&g_LoqQueueSize);
-    message->MoreAvailable = (remainingItems > 0);
-
-    ntStatus = STATUS_SUCCESS;
-    Irp->IoStatus.Information = sizeof(*message);
+    ULONG Written = 0;
+    ntStatus = DProcMonReport(
+        irpSp->Parameters.DeviceIoControl.InputBufferLength,
+        Irp->AssociatedIrp.SystemBuffer,
+        irpSp->Parameters.DeviceIoControl.OutputBufferLength,
+        Irp->AssociatedIrp.SystemBuffer,
+        &Written
+    );
+    Irp->IoStatus.Information = Written;
 
 End:
     Irp->IoStatus.Status = ntStatus;
@@ -197,6 +297,69 @@ NTSTATUS DProcMonCreateClose(
     IoCompleteRequest(Irp, IO_NO_INCREMENT);
 
     return STATUS_SUCCESS;
+}
+
+
+NTSTATUS DProcMonReport(
+    ULONG InBufLength,
+    PVOID InBuf,
+    ULONG OutBufLength,
+    PVOID OutBuf,
+    ULONG *WrittenLength
+) {
+    if (InBufLength < sizeof(struct DPROCMON_MESSAGE) || OutBufLength < sizeof(struct DPROCMON_MESSAGE)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    NTSTATUS status = STATUS_SUCCESS;
+    struct DPROCMON_MESSAGE message = *(struct DPROCMON_MESSAGE *)InBuf;
+
+    if (message.TerminateLast) {
+        DPROCMON_KDPRINT("Reqested termination of last reported process\n");
+
+        message.TerminateLast = FALSE;
+
+        HANDLE ProcessID = InterlockedExchangePointer(&g_LastReportedProcessID, NULL);
+
+        // If the process is already dead, this isn't an error.
+        status = DProcMonTerminateProcess(ProcessID);
+
+        if (!NT_SUCCESS(status)) {
+            goto End;
+        }
+    }
+
+    RtlZeroMemory(&message, sizeof(message));
+
+    PLIST_ENTRY listEntry = MyKeRemoveQueue(&g_LogQueue);
+    if (!listEntry) {
+        message.CreatedProcessName[0] = 0;
+        message.MoreAvailable = FALSE;
+
+        status = STATUS_NO_MORE_ENTRIES;
+        goto End;
+    }
+
+    struct LOG_QUEUE_DATA *data = CONTAINING_RECORD(listEntry, struct LOG_QUEUE_DATA, ListEntry);
+
+    RtlCopyMemory(message.CreatedProcessName, data->CreatedProcessName, sizeof(data->CreatedProcessName));
+    InterlockedExchangePointer(&g_LastReportedProcessID, data->ProcessID);
+
+    ExFreePoolWithTag(data, MEMORY_TAG);
+
+    LONG remainingItems = InterlockedDecrement(&g_LoqQueueSize);
+    message.MoreAvailable = (remainingItems > 0);
+
+    status = STATUS_SUCCESS;
+
+End:
+    *(struct DPROCMON_MESSAGE *)OutBuf = message;
+
+    if (WrittenLength) {
+        *WrittenLength = sizeof(message);
+    }
+
+    return status;
 }
 
 
