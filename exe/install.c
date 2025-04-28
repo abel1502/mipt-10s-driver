@@ -17,7 +17,7 @@ BOOLEAN SetupDriverName(
     driverLocLen = GetCurrentDirectory(BufferLength, DriverLocation);
 
     if (driverLocLen == 0) {
-        printf("GetCurrentDirectory failed! Error = %d \n", GetLastError());
+        printf("GetCurrentDirectory failed! Error: %#08x\n", GetLastError());
         return FALSE;
     }
 
@@ -79,7 +79,7 @@ BOOLEAN InstallDriver(
         err = GetLastError();
 
         if (err != ERROR_SERVICE_EXISTS) {
-            printf("CreateService failed! Error = %d \n", err);
+            printf("CreateService failed! Error: %#08x\n", err);
             return FALSE;
         }
 
@@ -105,7 +105,7 @@ BOOLEAN RemoveDriver(
     SC_HANDLE schService = OpenService(SchSCManager, DRIVER_NAME, SERVICE_ALL_ACCESS);
 
     if (schService == NULL) {
-        printf("OpenService failed! Error = %d \n", GetLastError());
+        printf("OpenService failed! Error: %#08x\n", GetLastError());
         return FALSE;
     }
 
@@ -113,7 +113,7 @@ BOOLEAN RemoveDriver(
     if (DeleteService(schService)) {
         rCode = TRUE;
     } else {
-        printf("DeleteService failed! Error = %d \n", GetLastError());
+        printf("DeleteService failed! Error: %#08x\n", GetLastError());
         rCode = FALSE;
     }
 
@@ -135,7 +135,7 @@ BOOLEAN StartDriver(
     SC_HANDLE schService = OpenService(SchSCManager, DRIVER_NAME, SERVICE_ALL_ACCESS);
 
     if (schService == NULL) {
-        printf("OpenService failed! Error = %d \n", GetLastError());
+        printf("OpenService failed! Error: %#08x\n", GetLastError());
         return FALSE;
     }
 
@@ -148,7 +148,7 @@ BOOLEAN StartDriver(
             // Ignore this error.
             return TRUE;
         } else {
-            printf("StartService failure! Error = %d \n", err);
+            printf("StartService failure! Error: %#08x\n", err);
             return FALSE;
         }
     }
@@ -172,7 +172,7 @@ BOOLEAN StopDriver(
     SC_HANDLE schService = OpenService(SchSCManager, DRIVER_NAME, SERVICE_ALL_ACCESS);
 
     if (schService == NULL) {
-        printf("OpenService failed! Error = %d \n", GetLastError());
+        printf("OpenService failed! Error: %#08x\n", GetLastError());
         return FALSE;
     }
 
@@ -180,7 +180,7 @@ BOOLEAN StopDriver(
     if (ControlService(schService, SERVICE_CONTROL_STOP, &serviceStatus)) {
         rCode = TRUE;
     } else {
-        printf("ControlService failed! Error = %d \n", GetLastError());
+        printf("ControlService failed! Error: %#08x\n", GetLastError());
         rCode = FALSE;
     }
 
@@ -201,7 +201,7 @@ BOOLEAN ManageDriver(
     SC_HANDLE schSCManager = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
 
     if (!schSCManager) {
-        printf("Open SC Manager failed! Error = %d \n", GetLastError());
+        printf("Open SC Manager failed! Error: %#08x\n", GetLastError());
         return FALSE;
     }
 

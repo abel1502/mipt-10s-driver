@@ -17,6 +17,8 @@ VOID __cdecl main(
 ) {
     if (argc >= 2) {
         if (strcmp(argv[1], "install") == 0) {
+            printf("Installing driver...\n");
+
             if (!ManageDriver(FALSE)) {
                 printf("Unable to install driver.\n");
 
@@ -30,6 +32,8 @@ VOID __cdecl main(
         }
 
         if (strcmp(argv[1], "uninstall") == 0) {
+            printf("Uninstalling driver...\n");
+
             if (!ManageDriver(TRUE)) {
                 printf("Unable to uninstall driver.\n");
                 return;
@@ -41,29 +45,53 @@ VOID __cdecl main(
 
         printf("Ignoring unknown arguments...\n");
     }
+
+    printf("Starting process monitoring client...\n");
     
     HANDLE hDevice;
-    if ((hDevice = CreateFile("\\\\.\\DPROCMON", GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL)) == INVALID_HANDLE_VALUE) {
-        printf("Failed to open the driver device: %#08x\n", GetLastError());
+    if ((hDevice = CreateFile("\\\\.\\DPROCMON", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL)) == INVALID_HANDLE_VALUE) {
+        printf("Failed to open the driver device: %#010x\n", GetLastError());
         return;
     }
 
     struct DPROCMON_MESSAGE message;
+    BOOL newline = FALSE;
 
     while (TRUE) {
         memset(&message, 0, sizeof(message));
 
         BOOL bRc = DeviceIoControl(hDevice, (DWORD)IOCTL_DPROCMON_GET_SPAWNED_PROCESSES, &message, (DWORD)sizeof(message), &message, (DWORD)sizeof(message), NULL, NULL);
+        DWORD status = 0;
         if (!bRc) {
-            printf("Error in DeviceIoControl: %#08x", GetLastError());
+            status = GetLastError();
+        }
+
+        switch (status) {
+        case 0: {
+            if (newline) {
+                puts("");
+                newline = FALSE;
+            }
+
+            printf("> %s\n", message.CreatedProcessName);
+
+            if (message.MoreAvailable) {
+                continue;
+            }
+        } break;
+
+        case ERROR_NO_MORE_ITEMS: {
+            putchar('.');
+            newline = TRUE;
+        } break;
+
+        default: {
+            printf("Error in DeviceIoControl: %#010x", GetLastError());
             return;
+        } break;
         }
 
-        printf("> %s\n", message.CreatedProcessName);
-
-        if (!message.MoreAvailable) {
-            Sleep(1000);
-        }
+        Sleep(1000);
     }
 
     // close the handle to the device.

@@ -6,7 +6,7 @@ struct LOG_QUEUE_ITEM {
 };
 
 #define NT_DEVICE_NAME  L"\\Device\\DPROCMON"
-#define DOS_DEVICE_NAME L"\\DosDevices\\DPPROCMON"
+#define DOS_DEVICE_NAME L"\\DosDevices\\DPROCMON"
 
 #define MEMORY_TAG 'DPRM'
 
@@ -36,12 +36,9 @@ void DProcMonOnCreateProcess(
     PPS_CREATE_NOTIFY_INFO CreateInfo
 );
 
-VOID PrintIrpInfo(PIRP Irp);
+PLIST_ENTRY MyKeRemoveQueue(PRKQUEUE Queue);
 
-VOID PrintChars(
-    _In_reads_(CountChars) PCHAR BufferAddress,
-    _In_ size_t CountChars
-);
+VOID PrintIrpInfo(PIRP Irp);
 
 
 
@@ -52,7 +49,6 @@ VOID PrintChars(
 #pragma alloc_text(PAGE, DProcMonDeviceControl)
 #pragma alloc_text(PAGE, DProcMonUnloadDriver)
 #pragma alloc_text(PAGE, PrintIrpInfo)
-#pragma alloc_text(PAGE, PrintChars)
 #endif  // ALLOC_PRAGMA
 
 

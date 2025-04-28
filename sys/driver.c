@@ -1,5 +1,6 @@
+#include <ntifs.h>
+#include <ntstrsafe.h>
 #include <ntddk.h>
-#include <Ntifs.h>
 #include <string.h>
 
 #include "driver.h"
@@ -59,6 +60,15 @@ NTSTATUS DriverEntry(
 
     KeInitializeQueue(&g_LogQueue, 0);
 
+    ntStatus = PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, FALSE);
+    if (!NT_SUCCESS(ntStatus)) {
+        // Delete everything that this routine has allocated.
+        DPROCMON_KDPRINT("Couldn't set up process creation callback\n");
+        IoDeleteSymbolicLink(&ntWin32NameString);
+        IoDeleteDevice(deviceObject);
+        return ntStatus;
+    }
+
     return STATUS_SUCCESS;
 }
 
@@ -72,6 +82,18 @@ VOID DProcMonUnloadDriver(
 
     PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, TRUE);
 
+    KeRundownQueue(&g_LogQueue);
+
+    for (
+        PLIST_ENTRY listEntry = MyKeRemoveQueue(&g_LogQueue);
+        listEntry;
+        listEntry = MyKeRemoveQueue(&g_LogQueue)
+    ) {
+        struct LOG_QUEUE_DATA *data = CONTAINING_RECORD(listEntry, struct LOG_QUEUE_DATA, ListEntry);
+        ExFreePoolWithTag(data, MEMORY_TAG);
+        InterlockedDecrement(&g_LoqQueueSize);
+    }
+
     // Create counted string version of our Win32 device name.
     UNICODE_STRING uniWin32NameString = RTL_CONSTANT_STRING(DOS_DEVICE_NAME);
 
@@ -80,16 +102,6 @@ VOID DProcMonUnloadDriver(
 
     if (deviceObject != NULL) {
         IoDeleteDevice(deviceObject);
-    }
-
-    for (
-        PLIST_ENTRY listEntry = KeRemoveQueue(&g_LogQueue, KernelMode, NULL);
-        listEntry != NULL;
-        listEntry = KeRemoveQueue(&g_LogQueue, KernelMode, NULL)
-    ) {
-        struct LOG_QUEUE_DATA *data = CONTAINING_RECORD(listEntry, struct LOG_QUEUE_DATA, ListEntry);
-        ExFreePoolWithTag(data, MEMORY_TAG);
-        InterlockedDecrement(&g_LoqQueueSize);
     }
 }
 
@@ -102,48 +114,62 @@ NTSTATUS DProcMonDeviceControl(
 
     UNREFERENCED_PARAMETER(DeviceObject);
 
-    // InterlockedExchangePointer(&g_LastReportedProcess, ProcessId);
-    // InterlockedCompareExchangePointer(&g_LastReportedProcess, NULL, NULL);
-
-    //PLIST_ENTRY listEntry = KeRemoveQueue(&g_LogQueue, KernelMode, NULL);
-    //if (listEntry) {
-    //    struct LOG_QUEUE_DATA *data = CONTAINING_RECORD(listEntry, struct LOG_QUEUE_DATA, ListEntry);
-    //    // TODO: Copy to user
-    //    ExFreePool(data);
-    //    return STATUS_SUCCESS;
-    //} else {
-    //    return STATUS_NO_MORE_ENTRIES;
-    //}
-
     PAGED_CODE();
 
     PIO_STACK_LOCATION irpSp = IoGetCurrentIrpStackLocation(Irp);
+
     ULONG inBufLength = irpSp->Parameters.DeviceIoControl.InputBufferLength;
     ULONG outBufLength = irpSp->Parameters.DeviceIoControl.OutputBufferLength;
-
-    if (!inBufLength || !outBufLength) {
+    if (inBufLength < sizeof(struct DPROCMON_MESSAGE) || outBufLength < sizeof(struct DPROCMON_MESSAGE)) {
         ntStatus = STATUS_INVALID_PARAMETER;
         goto End;
     }
 
     if (irpSp->Parameters.DeviceIoControl.IoControlCode != IOCTL_DPROCMON_GET_SPAWNED_PROCESSES) {
         ntStatus = STATUS_INVALID_DEVICE_REQUEST;
-        DPROCMON_KDPRINT("ERROR: unrecognized IOCTL %x\n", irpSp->Parameters.DeviceIoControl.IoControlCode);
+        DPROCMON_KDPRINT("ERROR: unrecognized IOCTL %#x\n", irpSp->Parameters.DeviceIoControl.IoControlCode);
         goto End;
     }
 
+    #if DBG
     DPROCMON_KDPRINT("Called IOCTL_DPROCMON_GET_SPAWNED_PROCESSES\n");
     PrintIrpInfo(Irp);
+    #endif
 
-    PCHAR buf = Irp->AssociatedIrp.SystemBuffer;
+    struct DPROCMON_MESSAGE *message = Irp->AssociatedIrp.SystemBuffer;
 
-    // Assign the length of the data copied to IoStatus.Information
-    // of the Irp and complete the Irp.
-    Irp->IoStatus.Information = outBufLength;
+    if (message->TerminateLast) {
+        DPROCMON_KDPRINT("Reqested termination of last reported process\n");
+        DPROCMON_KDPRINT("(Not yet implemented, ignored)\n");
+
+        // InterlockedCompareExchangePointer(&g_LastReportedProcess, NULL, NULL);
+    }
+
+    RtlZeroMemory(message, sizeof(*message));
+
+    PLIST_ENTRY listEntry = MyKeRemoveQueue(&g_LogQueue);
+    if (!listEntry) {
+        message->CreatedProcessName[0] = 0;
+        message->MoreAvailable = FALSE;
+
+        ntStatus = STATUS_NO_MORE_ENTRIES;
+        goto End;
+    }
+
+    struct LOG_QUEUE_DATA *data = CONTAINING_RECORD(listEntry, struct LOG_QUEUE_DATA, ListEntry);
+
+    RtlCopyMemory(message->CreatedProcessName, data->CreatedProcessName, sizeof(data->CreatedProcessName));
+    InterlockedExchangePointer(&g_LastReportedProcess, data->ProcessHandle);
+
+    ExFreePoolWithTag(data, MEMORY_TAG);
+
+    LONG remainingItems = InterlockedDecrement(&g_LoqQueueSize);
+    message->MoreAvailable = (remainingItems > 0);
+
+    ntStatus = STATUS_SUCCESS;
+    Irp->IoStatus.Information = sizeof(*message);
 
 End:
-    // Finish the I/O operation by simply completing the packet and returning
-    // the same status as in the packet itself.
     Irp->IoStatus.Status = ntStatus;
     IoCompleteRequest(Irp, IO_NO_INCREMENT);
     return ntStatus;
@@ -183,21 +209,38 @@ void DProcMonOnCreateProcess(
     }
 
     struct LOG_QUEUE_DATA *data = ExAllocatePool2(POOL_FLAG_PAGED, sizeof(struct LOG_QUEUE_DATA), MEMORY_TAG);
-    // Fill myData
+    data->CreatedProcessName[0] = 0; // TODO
+    data->ProcessHandle = ProcessId;
     KeInsertQueue(&g_LogQueue, &data->ListEntry);
 
     LONG queueSize = InterlockedIncrement(&g_LoqQueueSize);
     if (queueSize > LOG_QUEUE_MAX_SIZE) {
         // If the queue grows too big, pop the extra item
-        PLIST_ENTRY listEntry = KeRemoveQueue(&g_LogQueue, KernelMode, NULL);
+        PLIST_ENTRY listEntry = MyKeRemoveQueue(&g_LogQueue);
         if (listEntry) {
-            struct LOG_QUEUE_DATA *data = CONTAINING_RECORD(listEntry, struct LOG_QUEUE_DATA, ListEntry);
-            ExFreePoolWithTag(data, MEMORY_TAG);
+            struct LOG_QUEUE_DATA *head = CONTAINING_RECORD(listEntry, struct LOG_QUEUE_DATA, ListEntry);
+            ExFreePoolWithTag(head, MEMORY_TAG);
             InterlockedDecrement(&g_LoqQueueSize);
         }
     }
 }
 
+
+PLIST_ENTRY MyKeRemoveQueue(PRKQUEUE Queue) {
+    LARGE_INTEGER ZeroTimeout = {
+        .QuadPart = 0
+    };
+
+    PLIST_ENTRY listEntry = KeRemoveQueue(Queue, KernelMode, &ZeroTimeout);
+
+    ULONG_PTR status = (ULONG_PTR)listEntry;
+
+    if (status == STATUS_TIMEOUT || status == STATUS_USER_APC || status == STATUS_ABANDONED) {
+        return NULL;
+    }
+
+    return listEntry;
+}
 
 
 VOID PrintIrpInfo(
