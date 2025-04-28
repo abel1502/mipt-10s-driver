@@ -158,6 +158,7 @@ NTSTATUS DriverEntry(
     InterlockedExchange(&g_LoqQueueSize, 0);
     InterlockedExchangePointer(&g_LastReportedProcessID, NULL);
 
+    #if !USE_CALLBACKS
     ntStatus = PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, FALSE);
     if (!NT_SUCCESS(ntStatus)) {
         // Delete everything that this routine has allocated.
@@ -166,13 +167,16 @@ NTSTATUS DriverEntry(
         IoDeleteDevice(deviceObject);
         return ntStatus;
     }
+    #endif  // !USE_CALLBACKS
 
     // Register a dummy filter
     ntStatus = FltRegisterFilter(DriverObject, &FilterRegistration, &g_FilterHandle);
     if (!NT_SUCCESS(ntStatus)) {
         // Delete everything that this routine has allocated.
         DPROCMON_KDPRINT("Couldn't register filter\n");
+        #if !USE_CALLBACKS
         PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, TRUE);
+        #endif  // !USE_CALLBACKS
         IoDeleteSymbolicLink(&ntWin32NameString);
         IoDeleteDevice(deviceObject);
         return ntStatus;
@@ -187,7 +191,9 @@ NTSTATUS DriverEntry(
     if (!NT_SUCCESS(ntStatus)) {
         // Delete everything that this routine has allocated.
         DPROCMON_KDPRINT("Couldn't create security descriptor\n");
+        #if !USE_CALLBACKS
         PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, TRUE);
+        #endif  // !USE_CALLBACKS
         IoDeleteSymbolicLink(&ntWin32NameString);
         IoDeleteDevice(deviceObject);
         return ntStatus;
@@ -203,7 +209,9 @@ NTSTATUS DriverEntry(
     if (!NT_SUCCESS(ntStatus)) {
         // Delete everything that this routine has allocated.
         DPROCMON_KDPRINT("Couldn't create security descriptor\n");
+        #if !USE_CALLBACKS
         PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, TRUE);
+        #endif  // !USE_CALLBACKS
         IoDeleteSymbolicLink(&ntWin32NameString);
         IoDeleteDevice(deviceObject);
         return ntStatus;
@@ -227,7 +235,9 @@ NTSTATUS DriverEntry(
         // Delete everything that this routine has allocated.
         DPROCMON_KDPRINT("Couldn't create filter communication port\n");
         FltUnregisterFilter(g_FilterHandle);
+        #if !USE_CALLBACKS
         PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, TRUE);
+        #endif  // !USE_CALLBACKS
         IoDeleteSymbolicLink(&ntWin32NameString);
         IoDeleteDevice(deviceObject);
         return ntStatus;
@@ -239,7 +249,9 @@ NTSTATUS DriverEntry(
         DPROCMON_KDPRINT("Couldn't start dummy filter\n");
         FltCloseCommunicationPort(g_ServerPort);
         FltUnregisterFilter(g_FilterHandle);
+        #if !USE_CALLBACKS
         PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, TRUE);
+        #endif  // !USE_CALLBACKS
         IoDeleteSymbolicLink(&ntWin32NameString);
         IoDeleteDevice(deviceObject);
         return ntStatus;
@@ -256,7 +268,9 @@ VOID DProcMonUnloadDriver(
 
     PAGED_CODE();
 
+    #if !USE_CALLBACKS
     PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, TRUE);
+    #endif  // !USE_CALLBACKS
 
     KeRundownQueue(&g_LogQueue);
 
@@ -402,6 +416,7 @@ End:
 }
 
 
+#if !USE_CALLBACKS
 void DProcMonOnCreateProcess(
     PEPROCESS Process,
     HANDLE ProcessId,
@@ -452,6 +467,7 @@ void DProcMonOnCreateProcess(
         }
     }
 }
+#endif  // !USE_CALLBACKS
 
 
 PLIST_ENTRY MyKeRemoveQueue(PRKQUEUE Queue) {

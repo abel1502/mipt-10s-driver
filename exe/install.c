@@ -141,7 +141,9 @@ BOOLEAN CreateFilterRegistryKeys(LPCSTR serviceName) {
 }
 
 BOOLEAN InstallDriver(
-    _In_ SC_HANDLE SchSCManager
+    _In_ SC_HANDLE SchSCManager,
+    _In_ LPCSTR ServiceName,
+    _In_opt_ LPCSTR Dependencies
 ) {
     DWORD err;
 
@@ -158,8 +160,8 @@ BOOLEAN InstallDriver(
     // Create a new a service object.
     SC_HANDLE schService = CreateService(
         SchSCManager,           // handle of service control manager database
-        DRIVER_NAME,            // address of name of service to start
-        DRIVER_NAME,            // address of display name
+        ServiceName,            // address of name of service to start
+        ServiceName,            // address of display name
         SERVICE_ALL_ACCESS,     // type of access to service
         SERVICE_KERNEL_DRIVER,  // type of service
         SERVICE_DEMAND_START,   // when to start service
@@ -167,7 +169,7 @@ BOOLEAN InstallDriver(
         ServiceExe,             // address of name of binary file
         NULL,                   // service does not belong to a group
         NULL,                   // no tag requested
-        "FltMgr\0\0",           // dependency names, note: double 0 byte at the end required!
+        Dependencies,           // dependency names, note: double 0 byte at the end required!
         NULL,                   // use LocalSystem account
         NULL                    // no password for service account
     );
@@ -189,16 +191,17 @@ BOOLEAN InstallDriver(
         CloseServiceHandle(schService);
     }
 
-    return CreateFilterRegistryKeys(DRIVER_NAME);
+    return TRUE;
 }
 
 BOOLEAN RemoveDriver(
-    _In_ SC_HANDLE SchSCManager
+    _In_ SC_HANDLE SchSCManager,
+    _In_ LPCSTR ServiceName
 ) {
     BOOLEAN rCode;
 
     // Open the handle to the existing service.
-    SC_HANDLE schService = OpenService(SchSCManager, DRIVER_NAME, SERVICE_ALL_ACCESS);
+    SC_HANDLE schService = OpenService(SchSCManager, ServiceName, SERVICE_ALL_ACCESS);
 
     if (schService == NULL) {
         printf("OpenService failed! Error: %#010x\n", GetLastError());
@@ -223,12 +226,13 @@ BOOLEAN RemoveDriver(
 
 
 BOOLEAN StartDriver(
-    _In_ SC_HANDLE SchSCManager
+    _In_ SC_HANDLE SchSCManager,
+    _In_ LPCSTR ServiceName
 ) {
     DWORD err;
 
     // Open the handle to the existing service.
-    SC_HANDLE schService = OpenService(SchSCManager, DRIVER_NAME, SERVICE_ALL_ACCESS);
+    SC_HANDLE schService = OpenService(SchSCManager, ServiceName, SERVICE_ALL_ACCESS);
 
     if (schService == NULL) {
         printf("OpenService failed! Error: %#010x\n", GetLastError());
@@ -243,10 +247,10 @@ BOOLEAN StartDriver(
         if (err == ERROR_SERVICE_ALREADY_RUNNING) {
             // Ignore this error.
             return TRUE;
-        } else {
-            printf("StartService failure! Error: %#010x\n", err);
-            return FALSE;
         }
+
+        printf("StartService failure! Error: %#010x\n", err);
+        return FALSE;
     }
 
     // Close the service object.
@@ -259,13 +263,14 @@ BOOLEAN StartDriver(
 
 
 BOOLEAN StopDriver(
-    _In_ SC_HANDLE SchSCManager
+    _In_ SC_HANDLE SchSCManager,
+    _In_ LPCSTR ServiceName
 ) {
     BOOLEAN rCode = TRUE;
     SERVICE_STATUS serviceStatus;
 
     // Open the handle to the existing service.
-    SC_HANDLE schService = OpenService(SchSCManager, DRIVER_NAME, SERVICE_ALL_ACCESS);
+    SC_HANDLE schService = OpenService(SchSCManager, ServiceName, SERVICE_ALL_ACCESS);
 
     if (schService == NULL) {
         printf("OpenService failed! Error: %#010x\n", GetLastError());
@@ -305,24 +310,42 @@ BOOLEAN ManageDriver(
     switch (Remove) {
     case FALSE:
         // Install the driver service.
-        if (InstallDriver(schSCManager)) {
-            // Wait for the installation to complete...?
-            Sleep(1000);
-
-            // Start the driver service (i.e. start the driver).
-            rCode = StartDriver(schSCManager);
-        } else {
+        if (!InstallDriver(schSCManager, DRIVER2_NAME, NULL)) {
             rCode = FALSE;
+            break;
         }
 
+        // Install the second driver service.
+        if (!InstallDriver(schSCManager, DRIVER_NAME, "FltMgr\0" DRIVER2_NAME "\0\0")) {
+            RemoveDriver(schSCManager, DRIVER2_NAME);
+            rCode = FALSE;
+            break;
+        }
+
+        // Create the filter registry keys for the first driver.
+        if (!CreateFilterRegistryKeys(DRIVER_NAME)) {
+            RemoveDriver(schSCManager, DRIVER_NAME);
+            RemoveDriver(schSCManager, DRIVER2_NAME);
+            rCode = FALSE;
+            break;
+        }
+
+        // Wait for the installation to complete...?
+        Sleep(1000);
+
+        // Start the driver services (i.e. start the driver).
+        // The second driver should start automatically as a dependency
+        rCode = StartDriver(schSCManager, DRIVER_NAME);
         break;
 
     case TRUE:
         // Stop the driver.
-        StopDriver(schSCManager);
+        StopDriver(schSCManager, DRIVER_NAME);
+        StopDriver(schSCManager, DRIVER2_NAME);
 
         // Remove the driver service.
-        RemoveDriver(schSCManager);
+        RemoveDriver(schSCManager, DRIVER_NAME);
+        RemoveDriver(schSCManager, DRIVER2_NAME);
 
         // Ignore all errors.
         rCode = TRUE;

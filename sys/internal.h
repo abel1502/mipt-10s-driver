@@ -1,9 +1,6 @@
 #pragma once
 
-struct LOG_QUEUE_ITEM {
-    LIST_ENTRY list_entry;
-    PROCESS_NAME process_name;
-};
+#include "driver.h"
 
 #define NT_DEVICE_NAME  L"\\Device\\DPROCMON"
 #define DOS_DEVICE_NAME L"\\DosDevices\\DPROCMON"
@@ -12,8 +9,7 @@ struct LOG_QUEUE_ITEM {
 
 #if DBG
 #define DPROCMON_KDPRINT(...)   \
-    DbgPrint("DPROCMON.SYS: "); \
-    DbgPrint(__VA_ARGS__);
+    DbgPrint("DPROCMON.SYS: " __VA_ARGS__);
 #else
 #define DPROCMON_KDPRINT(...)
 #endif
@@ -65,11 +61,13 @@ DRIVER_DISPATCH DProcMonDeviceControl;
 
 DRIVER_UNLOAD DProcMonUnloadDriver;
 
+#if !USE_CALLBACKS
 void DProcMonOnCreateProcess(
     PEPROCESS Process,
     HANDLE ProcessId,
     PPS_CREATE_NOTIFY_INFO CreateInfo
 );
+#endif  // !USE_CALLBACKS
 
 PLIST_ENTRY MyKeRemoveQueue(PRKQUEUE Queue);
 
