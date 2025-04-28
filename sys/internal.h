@@ -40,6 +40,10 @@ NTSTATUS NTAPI DProcMonPortMessageNotify(
     ULONG OutputBufferLength,
     ULONG *ReturnOutputBufferLength
 );
+
+NTSTATUS DProcMonFilterUnload(
+    FLT_FILTER_UNLOAD_FLAGS Flags
+);
 #pragma endregion Minifilter
 
 DRIVER_INITIALIZE DriverEntry;

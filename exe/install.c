@@ -17,7 +17,7 @@ BOOLEAN SetupDriverName(
     driverLocLen = GetCurrentDirectory(BufferLength, DriverLocation);
 
     if (driverLocLen == 0) {
-        printf("GetCurrentDirectory failed! Error: %#08x\n", GetLastError());
+        printf("GetCurrentDirectory failed! Error: %#010x\n", GetLastError());
         return FALSE;
     }
 
@@ -40,19 +40,116 @@ BOOLEAN SetupDriverName(
     return TRUE;
 }
 
+BOOLEAN CreateFilterRegistryKeys(LPCSTR serviceName) {
+    HKEY hInstancesKey = NULL;
+    HKEY hInstanceSubkey = NULL;
+    LONG status;
+    DWORD value;
+    const CHAR *defaultInstanceName = "DProcMonFilterInstance";
+    const CHAR *altitude = "380001";  // An unused value in the correct range
+
+    CHAR instancesPath[512];
+    snprintf(instancesPath, 512, "SYSTEM\\CurrentControlSet\\Services\\%s\\Instances", serviceName);
+
+    // Create/open Instances key
+    status = RegCreateKeyEx(
+        HKEY_LOCAL_MACHINE,
+        instancesPath,
+        0,
+        NULL,
+        REG_OPTION_NON_VOLATILE,
+        KEY_WRITE,
+        NULL,
+        &hInstancesKey,
+        NULL
+    );
+    if (status != ERROR_SUCCESS) {
+        printf("Failed to create/open Instances key: %ld\n", status);
+        return FALSE;
+    }
+
+    // Set DefaultInstance value
+    status = RegSetValueEx(
+        hInstancesKey,
+        "DefaultInstance",
+        0,
+        REG_SZ,
+        (const BYTE *)defaultInstanceName,
+        (DWORD)((strlen(defaultInstanceName) + 1) * sizeof(CHAR))
+    );
+    if (status != ERROR_SUCCESS) {
+        printf("Failed to set DefaultInstance: %ld\n", status);
+        RegCloseKey(hInstancesKey);
+        return FALSE;
+    }
+
+    // Create instance subkey
+    status = RegCreateKeyEx(
+        hInstancesKey,
+        defaultInstanceName,
+        0,
+        NULL,
+        REG_OPTION_NON_VOLATILE,
+        KEY_WRITE,
+        NULL,
+        &hInstanceSubkey,
+        NULL
+    );
+    if (status != ERROR_SUCCESS) {
+        printf("Failed to create instance subkey: %ld\n", status);
+        RegCloseKey(hInstancesKey);
+        return FALSE;
+    }
+
+    // Set Altitude
+    status = RegSetValueEx(
+        hInstanceSubkey,
+        "Altitude",
+        0,
+        REG_SZ,
+        (const BYTE *)altitude,
+        (DWORD)((strlen(altitude) + 1) * sizeof(CHAR))
+    );
+    if (status != ERROR_SUCCESS) {
+        printf("Failed to set Altitude: %ld\n", status);
+        RegCloseKey(hInstanceSubkey);
+        RegCloseKey(hInstancesKey);
+        return FALSE;
+    }
+
+    // Set Flags (usually 0)
+    value = 0;
+    status = RegSetValueEx(
+        hInstanceSubkey,
+        "Flags",
+        0,
+        REG_DWORD,
+        (const BYTE *)&value,
+        sizeof(DWORD)
+    );
+    if (status != ERROR_SUCCESS) {
+        printf("Failed to set Flags: %ld\n", status);
+        RegCloseKey(hInstanceSubkey);
+        RegCloseKey(hInstancesKey);
+        return FALSE;
+    }
+
+    RegCloseKey(hInstanceSubkey);
+    RegCloseKey(hInstancesKey);
+
+    return TRUE;
+}
+
 BOOLEAN InstallDriver(
     _In_ SC_HANDLE SchSCManager
 ) {
     DWORD err;
 
-    //
     // NOTE: This creates an entry for a standalone driver. If this
     //       is modified for use with a driver that requires a Tag,
     //       Group, and/or Dependencies, it may be necessary to
     //       query the registry for existing driver information
     //       (in order to determine a unique Tag, etc.).
-    //
-
     CHAR ServiceExe[MAX_PATH];
     if (!SetupDriverName(ServiceExe, sizeof(ServiceExe))) {
         return FALSE;
@@ -70,7 +167,7 @@ BOOLEAN InstallDriver(
         ServiceExe,             // address of name of binary file
         NULL,                   // service does not belong to a group
         NULL,                   // no tag requested
-        NULL,                   // no dependency names // note: double 0 byte at the end required!
+        "FltMgr\0\0",           // dependency names, note: double 0 byte at the end required!
         NULL,                   // use LocalSystem account
         NULL                    // no password for service account
     );
@@ -78,13 +175,13 @@ BOOLEAN InstallDriver(
     if (schService == NULL) {
         err = GetLastError();
 
-        if (err != ERROR_SERVICE_EXISTS) {
-            printf("CreateService failed! Error: %#08x\n", err);
-            return FALSE;
+        if (err == ERROR_SERVICE_EXISTS) {
+            // Ignore this error.
+            return TRUE;
         }
 
-        // Ignore this error.
-        return TRUE;
+        printf("CreateService failed! Error: %#010x\n", err);
+        return FALSE;
     }
 
     // Close the service object.
@@ -92,8 +189,7 @@ BOOLEAN InstallDriver(
         CloseServiceHandle(schService);
     }
 
-    return TRUE;
-
+    return CreateFilterRegistryKeys(DRIVER_NAME);
 }
 
 BOOLEAN RemoveDriver(
@@ -105,7 +201,7 @@ BOOLEAN RemoveDriver(
     SC_HANDLE schService = OpenService(SchSCManager, DRIVER_NAME, SERVICE_ALL_ACCESS);
 
     if (schService == NULL) {
-        printf("OpenService failed! Error: %#08x\n", GetLastError());
+        printf("OpenService failed! Error: %#010x\n", GetLastError());
         return FALSE;
     }
 
@@ -113,7 +209,7 @@ BOOLEAN RemoveDriver(
     if (DeleteService(schService)) {
         rCode = TRUE;
     } else {
-        printf("DeleteService failed! Error: %#08x\n", GetLastError());
+        printf("DeleteService failed! Error: %#010x\n", GetLastError());
         rCode = FALSE;
     }
 
@@ -135,7 +231,7 @@ BOOLEAN StartDriver(
     SC_HANDLE schService = OpenService(SchSCManager, DRIVER_NAME, SERVICE_ALL_ACCESS);
 
     if (schService == NULL) {
-        printf("OpenService failed! Error: %#08x\n", GetLastError());
+        printf("OpenService failed! Error: %#010x\n", GetLastError());
         return FALSE;
     }
 
@@ -148,7 +244,7 @@ BOOLEAN StartDriver(
             // Ignore this error.
             return TRUE;
         } else {
-            printf("StartService failure! Error: %#08x\n", err);
+            printf("StartService failure! Error: %#010x\n", err);
             return FALSE;
         }
     }
@@ -172,7 +268,7 @@ BOOLEAN StopDriver(
     SC_HANDLE schService = OpenService(SchSCManager, DRIVER_NAME, SERVICE_ALL_ACCESS);
 
     if (schService == NULL) {
-        printf("OpenService failed! Error: %#08x\n", GetLastError());
+        printf("OpenService failed! Error: %#010x\n", GetLastError());
         return FALSE;
     }
 
@@ -180,7 +276,7 @@ BOOLEAN StopDriver(
     if (ControlService(schService, SERVICE_CONTROL_STOP, &serviceStatus)) {
         rCode = TRUE;
     } else {
-        printf("ControlService failed! Error: %#08x\n", GetLastError());
+        printf("ControlService failed! Error: %#010x\n", GetLastError());
         rCode = FALSE;
     }
 
@@ -201,7 +297,7 @@ BOOLEAN ManageDriver(
     SC_HANDLE schSCManager = OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);
 
     if (!schSCManager) {
-        printf("Open SC Manager failed! Error: %#08x\n", GetLastError());
+        printf("Open SC Manager failed! Error: %#010x\n", GetLastError());
         return FALSE;
     }
 
@@ -210,6 +306,9 @@ BOOLEAN ManageDriver(
     case FALSE:
         // Install the driver service.
         if (InstallDriver(schSCManager)) {
+            // Wait for the installation to complete...?
+            Sleep(1000);
+
             // Start the driver service (i.e. start the driver).
             rCode = StartDriver(schSCManager);
         } else {

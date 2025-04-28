@@ -27,7 +27,7 @@ static const FLT_REGISTRATION FilterRegistration = {
     0,                         // Flags
     NULL,                      // Context
     Callbacks,                 // Operation callbacks (none)
-    NULL,                      // MiniFilterUnload (optional, you can provide one)
+    &DProcMonFilterUnload,     // MiniFilterUnload
     NULL,                      // InstanceSetup
     NULL,                      // InstanceQueryTeardown
     NULL,                      // InstanceTeardownStart
@@ -86,6 +86,24 @@ NTSTATUS NTAPI DProcMonPortMessageNotify(
         OutputBuffer,
         ReturnOutputBufferLength
     );
+}
+
+NTSTATUS DProcMonFilterUnload(
+    FLT_FILTER_UNLOAD_FLAGS Flags
+) {
+    UNREFERENCED_PARAMETER(Flags);
+
+    if (g_ServerPort) {
+        FltCloseCommunicationPort(g_ServerPort);
+        g_ServerPort = NULL;
+    }
+
+    if (g_FilterHandle) {
+        FltUnregisterFilter(g_FilterHandle);
+        g_FilterHandle = NULL;
+    }
+
+    return STATUS_SUCCESS;
 }
 #pragma endregion Minifilter
 
@@ -160,10 +178,39 @@ NTSTATUS DriverEntry(
         return ntStatus;
     }
 
-    UNICODE_STRING portName = RTL_CONSTANT_STRING(L"\\DProcMonPort");
+    UNICODE_STRING portName = RTL_CONSTANT_STRING(PORT_NAME);
+
+    SECURITY_DESCRIPTOR sd;
+
+    // Initialize security descriptor
+    ntStatus = RtlCreateSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
+    if (!NT_SUCCESS(ntStatus)) {
+        // Delete everything that this routine has allocated.
+        DPROCMON_KDPRINT("Couldn't create security descriptor\n");
+        PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, TRUE);
+        IoDeleteSymbolicLink(&ntWin32NameString);
+        IoDeleteDevice(deviceObject);
+        return ntStatus;
+    }
+
+    // Set everyone full access
+    ntStatus = RtlSetDaclSecurityDescriptor(
+        &sd,
+        TRUE,  // DaclPresent
+        NULL,  // NULL DACL = everyone full access
+        FALSE  // DaclDefaulted
+    );
+    if (!NT_SUCCESS(ntStatus)) {
+        // Delete everything that this routine has allocated.
+        DPROCMON_KDPRINT("Couldn't create security descriptor\n");
+        PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, TRUE);
+        IoDeleteSymbolicLink(&ntWin32NameString);
+        IoDeleteDevice(deviceObject);
+        return ntStatus;
+    }
 
     OBJECT_ATTRIBUTES oa;
-    InitializeObjectAttributes(&oa, &portName, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
+    InitializeObjectAttributes(&oa, &portName, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, &sd);
 
     ntStatus = FltCreateCommunicationPort(
         g_FilterHandle,
@@ -208,14 +255,6 @@ VOID DProcMonUnloadDriver(
     PDEVICE_OBJECT deviceObject = DriverObject->DeviceObject;
 
     PAGED_CODE();
-
-    if (g_FilterHandle) {
-        FltUnregisterFilter(g_FilterHandle);
-    }
-
-    if (g_ServerPort) {
-        FltCloseCommunicationPort(g_ServerPort);
-    }
 
     PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, TRUE);
 

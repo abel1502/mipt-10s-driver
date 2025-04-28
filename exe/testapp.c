@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <winioctl.h>
+#include <fltUser.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,8 @@ VOID __cdecl main(
     _In_ ULONG argc,
     _In_reads_(argc) PCHAR argv[]
 ) {
+    BOOL usePort = FALSE;
+
     if (argc >= 2) {
         if (strcmp(argv[1], "install") == 0) {
             printf("Installing driver...\n");
@@ -29,9 +32,7 @@ VOID __cdecl main(
 
             printf("Successfully installed driver.\n");
             return;
-        }
-
-        if (strcmp(argv[1], "uninstall") == 0) {
+        } else if (strcmp(argv[1], "uninstall") == 0) {
             printf("Uninstalling driver...\n");
 
             if (!ManageDriver(TRUE)) {
@@ -41,17 +42,42 @@ VOID __cdecl main(
 
             printf("Successfully uninstalled driver.\n");
             return;
-        }
+        } else if (strcmp(argv[1], "port") == 0) {
+            printf("Using communication port instead of IOCTLs.\n");
 
-        printf("Ignoring unknown arguments...\n");
+            usePort = TRUE;
+        } else {
+            printf("Unknown arguments, quitting.\n");
+            return;
+        }
     }
 
     printf("Starting process monitoring client...\n");
     
-    HANDLE hDevice;
-    if ((hDevice = CreateFile("\\\\.\\DPROCMON", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL)) == INVALID_HANDLE_VALUE) {
-        printf("Failed to open the driver device: %#010x\n", GetLastError());
-        return;
+    HANDLE hDevice = INVALID_HANDLE_VALUE;
+    HANDLE hPort = INVALID_HANDLE_VALUE;
+
+    if (usePort) {
+        HRESULT result = FilterConnectCommunicationPort(
+            PORT_NAME,
+            0,
+            NULL,
+            0,
+            NULL,
+            &hPort
+        );
+
+        if (FAILED(result)) {
+            printf("Failed to connect to port: %#010x\n", result);
+            return;
+        }
+    } else {
+        hDevice = CreateFile("\\\\.\\DPROCMON", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+
+        if (hDevice == INVALID_HANDLE_VALUE) {
+            printf("Failed to open the driver device: %#010x\n", GetLastError());
+            return;
+        }
     }
 
     struct DPROCMON_MESSAGE message;
@@ -59,10 +85,32 @@ VOID __cdecl main(
     BOOL newline = FALSE;
 
     while (TRUE) {
-        BOOL bRc = DeviceIoControl(hDevice, (DWORD)IOCTL_DPROCMON_GET_SPAWNED_PROCESSES, &message, (DWORD)sizeof(message), &message, (DWORD)sizeof(message), NULL, NULL);
         DWORD status = 0;
-        if (!bRc) {
-            status = GetLastError();
+
+        if (usePort) {
+            DWORD bytesReturned = 0;
+            status = FilterSendMessage(
+                hPort,
+                &message,
+                (DWORD)sizeof(message),
+                &message,
+                (DWORD)sizeof(message),
+                &bytesReturned  // Unused, but required to be non-null
+            );
+        } else {
+            BOOL bRc = DeviceIoControl(
+                hDevice,
+                (DWORD)IOCTL_DPROCMON_GET_SPAWNED_PROCESSES,
+                &message,
+                (DWORD)sizeof(message),
+                &message,
+                (DWORD)sizeof(message),
+                NULL,
+                NULL
+            );
+            if (!bRc) {
+                status = GetLastError();
+            }
         }
 
         switch (status) {
@@ -75,6 +123,7 @@ VOID __cdecl main(
             printf("> %.*s\n", (int)sizeof(message.CreatedProcessName), message.CreatedProcessName);
 
             if (strcmp(message.CreatedProcessName, "\\??\\C:\\Program Files\\WindowsApps\\Microsoft.WindowsNotepad_11.2501.31.0_x64__8wekyb3d8bbwe\\Notepad\\Notepad.exe") == 0) {
+                printf("Requesting termination!\n");
                 message.TerminateLast = TRUE;
             }
 
@@ -83,13 +132,15 @@ VOID __cdecl main(
             }
         } break;
 
+        // Apparently minifilters modify the error code via HRESULT_FROM_WIN32
+        case (((ERROR_NO_MORE_ITEMS) & 0x0000FFFF) | (FACILITY_WIN32 << 16) | 0x80000000):
         case ERROR_NO_MORE_ITEMS: {
             putchar('.');
             newline = TRUE;
         } break;
-
+        
         default: {
-            printf("Error in DeviceIoControl: %#010x", GetLastError());
+            printf("Error communicating with the driver: %#010x", status);
             return;
         } break;
         }

@@ -9,6 +9,8 @@
 
 #define DRIVER_NAME  "DProcMon"
 
+#define PORT_NAME    L"\\DProcMonPort"
+
 typedef CHAR PROCESS_NAME[0x100];
 
 struct DPROCMON_MESSAGE {
