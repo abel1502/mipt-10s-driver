@@ -8,8 +8,8 @@
 
 
 static KQUEUE g_LogQueue;
-static volatile LONG g_LoqQueueSize = 0;
-static volatile HANDLE g_LastReportedProcess = NULL;
+static volatile LONG g_LoqQueueSize;
+static volatile HANDLE g_LastReportedProcessID;
 
 
 NTSTATUS DriverEntry(
@@ -59,6 +59,8 @@ NTSTATUS DriverEntry(
     }
 
     KeInitializeQueue(&g_LogQueue, 0);
+    InterlockedExchange(&g_LoqQueueSize, 0);
+    InterlockedExchangePointer(&g_LastReportedProcessID, NULL);
 
     ntStatus = PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, FALSE);
     if (!NT_SUCCESS(ntStatus)) {
@@ -131,7 +133,7 @@ NTSTATUS DProcMonDeviceControl(
         goto End;
     }
 
-    #if DBG
+    #if DBG && FALSE
     DPROCMON_KDPRINT("Called IOCTL_DPROCMON_GET_SPAWNED_PROCESSES\n");
     PrintIrpInfo(Irp);
     #endif
@@ -142,7 +144,12 @@ NTSTATUS DProcMonDeviceControl(
         DPROCMON_KDPRINT("Reqested termination of last reported process\n");
         DPROCMON_KDPRINT("(Not yet implemented, ignored)\n");
 
-        // InterlockedCompareExchangePointer(&g_LastReportedProcess, NULL, NULL);
+        HANDLE ProcessID = InterlockedExchangePointer(&g_LastReportedProcessID, NULL);
+        
+        // If the process is already dead, this isn't an error.
+        ntStatus = DProcMonTerminateProcess(ProcessID);
+
+        message->TerminateLast = FALSE;
     }
 
     RtlZeroMemory(message, sizeof(*message));
@@ -159,7 +166,7 @@ NTSTATUS DProcMonDeviceControl(
     struct LOG_QUEUE_DATA *data = CONTAINING_RECORD(listEntry, struct LOG_QUEUE_DATA, ListEntry);
 
     RtlCopyMemory(message->CreatedProcessName, data->CreatedProcessName, sizeof(data->CreatedProcessName));
-    InterlockedExchangePointer(&g_LastReportedProcess, data->ProcessHandle);
+    InterlockedExchangePointer(&g_LastReportedProcessID, data->ProcessID);
 
     ExFreePoolWithTag(data, MEMORY_TAG);
 
@@ -229,7 +236,7 @@ void DProcMonOnCreateProcess(
         return;
     }
 	
-    data->ProcessHandle = ProcessId;
+    data->ProcessID = ProcessId;
     KeInsertQueue(&g_LogQueue, &data->ListEntry);
 
     LONG queueSize = InterlockedIncrement(&g_LoqQueueSize);
@@ -259,6 +266,45 @@ PLIST_ENTRY MyKeRemoveQueue(PRKQUEUE Queue) {
     }
 
     return listEntry;
+}
+
+
+NTSTATUS DProcMonTerminateProcess(HANDLE ProcessID) {
+    if (ProcessID == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    PEPROCESS Process;
+    NTSTATUS status = PsLookupProcessByProcessId(ProcessID, &Process);
+    if (status == STATUS_INVALID_CID) {
+        // If a process is already dead, it's considered a success
+        return STATUS_SUCCESS;
+    }
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    HANDLE hProcess;
+    status = ObOpenObjectByPointer(
+        Process,
+        OBJ_KERNEL_HANDLE,
+        NULL,
+        0x0001,  // PROCESS_TERMINATE
+        *PsProcessType,
+        KernelMode,
+        &hProcess
+    );
+    if (!NT_SUCCESS(status)) {
+        ObDereferenceObject(Process);
+        return status;
+    }
+
+    status = ZwTerminateProcess(hProcess, STATUS_SUCCESS);
+    
+    ZwClose(hProcess);
+    ObDereferenceObject(Process);
+
+    return status;
 }
 
 

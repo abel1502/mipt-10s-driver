@@ -38,9 +38,9 @@ void DProcMonOnCreateProcess(
 
 PLIST_ENTRY MyKeRemoveQueue(PRKQUEUE Queue);
 
+NTSTATUS DProcMonTerminateProcess(HANDLE ProcessID);
+
 VOID PrintIrpInfo(PIRP Irp);
-
-
 
 
 #ifdef ALLOC_PRAGMA
@@ -55,7 +55,7 @@ VOID PrintIrpInfo(PIRP Irp);
 struct LOG_QUEUE_DATA {
     LIST_ENTRY ListEntry;
     PROCESS_NAME CreatedProcessName;
-    HANDLE ProcessHandle;
+    HANDLE ProcessID;
 };
 
 

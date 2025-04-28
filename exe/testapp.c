@@ -55,11 +55,10 @@ VOID __cdecl main(
     }
 
     struct DPROCMON_MESSAGE message;
+    memset(&message, 0, sizeof(message));
     BOOL newline = FALSE;
 
     while (TRUE) {
-        memset(&message, 0, sizeof(message));
-
         BOOL bRc = DeviceIoControl(hDevice, (DWORD)IOCTL_DPROCMON_GET_SPAWNED_PROCESSES, &message, (DWORD)sizeof(message), &message, (DWORD)sizeof(message), NULL, NULL);
         DWORD status = 0;
         if (!bRc) {
@@ -74,6 +73,10 @@ VOID __cdecl main(
             }
 
             printf("> %.*s\n", (int)sizeof(message.CreatedProcessName), message.CreatedProcessName);
+
+            if (strcmp(message.CreatedProcessName, "\\??\\C:\\Program Files\\WindowsApps\\Microsoft.WindowsNotepad_11.2501.31.0_x64__8wekyb3d8bbwe\\Notepad\\Notepad.exe") == 0) {
+                message.TerminateLast = TRUE;
+            }
 
             if (message.MoreAvailable) {
                 continue;
