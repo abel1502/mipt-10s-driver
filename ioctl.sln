@@ -1,6 +1,6 @@
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
-VisualStudioVersion = 17.13.35806.99 d17.13
+VisualStudioVersion = 17.13.35806.99
 MinimumVisualStudioVersion = 12.0
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Exe", "Exe", "{C4575BAC-8843-4B59-88F5-8D142A59F463}"
 EndProject
@@ -9,6 +9,8 @@ EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ioctlapp", "exe\ioctlapp.vcxproj", "{61899E58-10C2-4EB1-9508-58AE7DC3B3A9}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "driver", "sys\driver.vcxproj", "{29BD96E0-B6C5-42A0-B683-FD9740810699}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "driver2", "sys2\driver2.vcxproj", "{F1744347-842D-4C8C-98DC-5430CB1F4421}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -24,6 +26,12 @@ Global
 		{29BD96E0-B6C5-42A0-B683-FD9740810699}.Debug|x64.Build.0 = Debug|x64
 		{29BD96E0-B6C5-42A0-B683-FD9740810699}.Release|x64.ActiveCfg = Release|x64
 		{29BD96E0-B6C5-42A0-B683-FD9740810699}.Release|x64.Build.0 = Release|x64
+		{F1744347-842D-4C8C-98DC-5430CB1F4421}.Debug|x64.ActiveCfg = Debug|x64
+		{F1744347-842D-4C8C-98DC-5430CB1F4421}.Debug|x64.Build.0 = Debug|x64
+		{F1744347-842D-4C8C-98DC-5430CB1F4421}.Debug|x64.Deploy.0 = Debug|x64
+		{F1744347-842D-4C8C-98DC-5430CB1F4421}.Release|x64.ActiveCfg = Release|x64
+		{F1744347-842D-4C8C-98DC-5430CB1F4421}.Release|x64.Build.0 = Release|x64
+		{F1744347-842D-4C8C-98DC-5430CB1F4421}.Release|x64.Deploy.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -31,6 +39,7 @@ Global
 	GlobalSection(NestedProjects) = preSolution
 		{61899E58-10C2-4EB1-9508-58AE7DC3B3A9} = {C4575BAC-8843-4B59-88F5-8D142A59F463}
 		{29BD96E0-B6C5-42A0-B683-FD9740810699} = {52CD4CBC-6018-4367-BE2B-EA5A2864E7BE}
+		{F1744347-842D-4C8C-98DC-5430CB1F4421} = {52CD4CBC-6018-4367-BE2B-EA5A2864E7BE}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {9B5C0021-C64E-460A-BF9D-0168613C89E8}
