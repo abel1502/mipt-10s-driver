@@ -8,7 +8,8 @@
 
 BOOLEAN SetupDriverName(
     _Inout_updates_bytes_all_(BufferLength) PCHAR DriverLocation,
-    _In_ ULONG BufferLength
+    _In_ ULONG BufferLength,
+    _In_ LPCSTR DriverName
 ) {
     HANDLE fileHandle;
     DWORD driverLocLen = 0;
@@ -22,13 +23,22 @@ BOOLEAN SetupDriverName(
     }
 
     // Setup path name to driver file.
-    if (FAILED(StringCbCat(DriverLocation, BufferLength, "\\" DRIVER_NAME ".sys"))) {
+    if (FAILED(StringCbCat(DriverLocation, BufferLength, "\\"))) {
         return FALSE;
     }
 
+    if (FAILED(StringCbCat(DriverLocation, BufferLength, DriverName))) {
+        return FALSE;
+    }
+
+    if (FAILED(StringCbCat(DriverLocation, BufferLength, ".sys"))) {
+        return FALSE;
+    }
+
+
     // Ensure driver file is in the specified directory.
     if ((fileHandle = CreateFile(DriverLocation, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL)) == INVALID_HANDLE_VALUE) {
-        printf("%s.sys is not loaded.\n", DRIVER_NAME);
+        printf("%s.sys is not loaded.\n", DriverName);
         return FALSE;
     }
 
@@ -153,7 +163,7 @@ BOOLEAN InstallDriver(
     //       query the registry for existing driver information
     //       (in order to determine a unique Tag, etc.).
     CHAR ServiceExe[MAX_PATH];
-    if (!SetupDriverName(ServiceExe, sizeof(ServiceExe))) {
+    if (!SetupDriverName(ServiceExe, sizeof(ServiceExe), ServiceName)) {
         return FALSE;
     }
 
