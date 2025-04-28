@@ -17,7 +17,11 @@
 // transmitted via a callback.
 // Note that the second driver is still installed and
 // launched regardless of the value of this option
-#define USE_CALLBACKS 0
+#define USE_CALLBACKS 1
+
+#if USE_CALLBACKS
+#define CALLBACK_NAME L"\\Callback\\DPrMProcessCreated"
+#endif  // USE_CALLBACKS
 
 typedef CHAR PROCESS_NAME[0x100];
 

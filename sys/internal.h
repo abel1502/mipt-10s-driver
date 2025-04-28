@@ -16,7 +16,7 @@
 
 
 #pragma region Minifilter
-void NTAPI DProcMonPortDisconnectNotify(
+VOID NTAPI DProcMonPortDisconnectNotify(
     PVOID ConnectionCookie
 );
 
@@ -61,13 +61,18 @@ DRIVER_DISPATCH DProcMonDeviceControl;
 
 DRIVER_UNLOAD DProcMonUnloadDriver;
 
-#if !USE_CALLBACKS
-void DProcMonOnCreateProcess(
+#if USE_CALLBACKS
+CALLBACK_FUNCTION DProcMonPortProcessNotify;
+#else
+VOID DProcMonOnCreateProcess(
     PEPROCESS Process,
     HANDLE ProcessId,
     PPS_CREATE_NOTIFY_INFO CreateInfo
 );
-#endif  // !USE_CALLBACKS
+#endif  // USE_CALLBACKS
+
+struct LOG_QUEUE_DATA;
+VOID DProcMonEnqueueProcessInfo(struct LOG_QUEUE_DATA *data);
 
 PLIST_ENTRY MyKeRemoveQueue(PRKQUEUE Queue);
 

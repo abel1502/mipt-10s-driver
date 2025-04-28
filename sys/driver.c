@@ -12,6 +12,11 @@ static KQUEUE g_LogQueue;
 static volatile LONG g_LoqQueueSize;
 static volatile HANDLE g_LastReportedProcessID;
 
+#if USE_CALLBACKS
+static PCALLBACK_OBJECT g_CallbackObject;
+static PVOID g_CallbackRegistrationHandle;
+#endif  // USE_CALLBACKS
+
 #pragma region Minifilter
 static PFLT_FILTER g_FilterHandle = NULL;
 static PFLT_PORT g_ServerPort = NULL;
@@ -37,7 +42,7 @@ static const FLT_REGISTRATION FilterRegistration = {
     NULL                       // NormalizeNameComponent
 };
 
-void NTAPI DProcMonPortDisconnectNotify(
+VOID NTAPI DProcMonPortDisconnectNotify(
     PVOID ConnectionCookie
 ) {
     UNREFERENCED_PARAMETER(ConnectionCookie);
@@ -158,7 +163,43 @@ NTSTATUS DriverEntry(
     InterlockedExchange(&g_LoqQueueSize, 0);
     InterlockedExchangePointer(&g_LastReportedProcessID, NULL);
 
-    #if !USE_CALLBACKS
+    #if USE_CALLBACKS
+    g_CallbackRegistrationHandle = NULL;
+
+    UNICODE_STRING callbackName = RTL_CONSTANT_STRING(CALLBACK_NAME);
+    
+    OBJECT_ATTRIBUTES objectAttributes;
+    InitializeObjectAttributes(
+        &objectAttributes,
+        &callbackName,
+        OBJ_KERNEL_HANDLE /* TODO: | OBJ_PERMANENT ? */ | OBJ_CASE_INSENSITIVE,
+        NULL,
+        NULL
+    );
+
+    ntStatus = ExCreateCallback(&g_CallbackObject, &objectAttributes, FALSE, FALSE);
+    if (!NT_SUCCESS(ntStatus)) {
+        // Delete everything that this routine has allocated.
+        DPROCMON_KDPRINT("Couldn't open callback object\n");
+        IoDeleteSymbolicLink(&ntWin32NameString);
+        IoDeleteDevice(deviceObject);
+        return ntStatus;
+    }
+
+    // TODO: Pehaps not, with OBJ_PERMANENT instead?
+    ObReferenceObject(g_CallbackObject);
+
+    g_CallbackRegistrationHandle = ExRegisterCallback(g_CallbackObject, DProcMonPortProcessNotify, NULL);
+    if (!g_CallbackRegistrationHandle) {
+        // Delete everything that this routine has allocated.
+        DPROCMON_KDPRINT("Couldn't register callback\n");
+        ObDereferenceObject(g_CallbackObject);
+        g_CallbackObject = NULL;
+        IoDeleteSymbolicLink(&ntWin32NameString);
+        IoDeleteDevice(deviceObject);
+        return STATUS_UNSUCCESSFUL;
+    }
+    #else
     ntStatus = PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, FALSE);
     if (!NT_SUCCESS(ntStatus)) {
         // Delete everything that this routine has allocated.
@@ -167,16 +208,21 @@ NTSTATUS DriverEntry(
         IoDeleteDevice(deviceObject);
         return ntStatus;
     }
-    #endif  // !USE_CALLBACKS
+    #endif  // USE_CALLBACKS
 
     // Register a dummy filter
     ntStatus = FltRegisterFilter(DriverObject, &FilterRegistration, &g_FilterHandle);
     if (!NT_SUCCESS(ntStatus)) {
         // Delete everything that this routine has allocated.
         DPROCMON_KDPRINT("Couldn't register filter\n");
-        #if !USE_CALLBACKS
+        #if USE_CALLBACKS
+        ExUnregisterCallback(&g_CallbackRegistrationHandle);
+        g_CallbackRegistrationHandle = NULL;
+        ObDereferenceObject(g_CallbackObject);
+        g_CallbackObject = NULL;
+        #else
         PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, TRUE);
-        #endif  // !USE_CALLBACKS
+        #endif  // USE_CALLBACKS
         IoDeleteSymbolicLink(&ntWin32NameString);
         IoDeleteDevice(deviceObject);
         return ntStatus;
@@ -191,9 +237,14 @@ NTSTATUS DriverEntry(
     if (!NT_SUCCESS(ntStatus)) {
         // Delete everything that this routine has allocated.
         DPROCMON_KDPRINT("Couldn't create security descriptor\n");
-        #if !USE_CALLBACKS
+        #if USE_CALLBACKS
+        ExUnregisterCallback(&g_CallbackRegistrationHandle);
+        g_CallbackRegistrationHandle = NULL;
+        ObDereferenceObject(g_CallbackObject);
+        g_CallbackObject = NULL;
+        #else
         PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, TRUE);
-        #endif  // !USE_CALLBACKS
+        #endif  // USE_CALLBACKS
         IoDeleteSymbolicLink(&ntWin32NameString);
         IoDeleteDevice(deviceObject);
         return ntStatus;
@@ -209,9 +260,14 @@ NTSTATUS DriverEntry(
     if (!NT_SUCCESS(ntStatus)) {
         // Delete everything that this routine has allocated.
         DPROCMON_KDPRINT("Couldn't create security descriptor\n");
-        #if !USE_CALLBACKS
+        #if USE_CALLBACKS
+        ExUnregisterCallback(&g_CallbackRegistrationHandle);
+        g_CallbackRegistrationHandle = NULL;
+        ObDereferenceObject(g_CallbackObject);
+        g_CallbackObject = NULL;
+        #else
         PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, TRUE);
-        #endif  // !USE_CALLBACKS
+        #endif  // USE_CALLBACKS
         IoDeleteSymbolicLink(&ntWin32NameString);
         IoDeleteDevice(deviceObject);
         return ntStatus;
@@ -235,9 +291,14 @@ NTSTATUS DriverEntry(
         // Delete everything that this routine has allocated.
         DPROCMON_KDPRINT("Couldn't create filter communication port\n");
         FltUnregisterFilter(g_FilterHandle);
-        #if !USE_CALLBACKS
+        #if USE_CALLBACKS
+        ExUnregisterCallback(&g_CallbackRegistrationHandle);
+        g_CallbackRegistrationHandle = NULL;
+        ObDereferenceObject(g_CallbackObject);
+        g_CallbackObject = NULL;
+        #else
         PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, TRUE);
-        #endif  // !USE_CALLBACKS
+        #endif  // USE_CALLBACKS
         IoDeleteSymbolicLink(&ntWin32NameString);
         IoDeleteDevice(deviceObject);
         return ntStatus;
@@ -249,9 +310,14 @@ NTSTATUS DriverEntry(
         DPROCMON_KDPRINT("Couldn't start dummy filter\n");
         FltCloseCommunicationPort(g_ServerPort);
         FltUnregisterFilter(g_FilterHandle);
-        #if !USE_CALLBACKS
+        #if USE_CALLBACKS
+        ExUnregisterCallback(&g_CallbackRegistrationHandle);
+        g_CallbackRegistrationHandle = NULL;
+        ObDereferenceObject(g_CallbackObject);
+        g_CallbackObject = NULL;
+        #else
         PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, TRUE);
-        #endif  // !USE_CALLBACKS
+        #endif  // USE_CALLBACKS
         IoDeleteSymbolicLink(&ntWin32NameString);
         IoDeleteDevice(deviceObject);
         return ntStatus;
@@ -268,9 +334,14 @@ VOID DProcMonUnloadDriver(
 
     PAGED_CODE();
 
-    #if !USE_CALLBACKS
+    #if USE_CALLBACKS
+    ExUnregisterCallback(g_CallbackRegistrationHandle);
+    g_CallbackRegistrationHandle = NULL;
+    ObDereferenceObject(g_CallbackObject);
+    g_CallbackObject = NULL;
+    #else
     PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, TRUE);
-    #endif  // !USE_CALLBACKS
+    #endif  // USE_CALLBACKS
 
     KeRundownQueue(&g_LogQueue);
 
@@ -416,8 +487,38 @@ End:
 }
 
 
-#if !USE_CALLBACKS
-void DProcMonOnCreateProcess(
+#if USE_CALLBACKS
+VOID DProcMonPortProcessNotify(
+    PVOID CallbackContext,
+    PVOID Argument1,
+    PVOID Argument2
+) {
+    UNREFERENCED_PARAMETER(CallbackContext);
+    UNREFERENCED_PARAMETER(Argument2);
+
+    // Note: it's heap-allocated in a different driver, so with a different tag
+    struct DPROCMON_INTERNAL_MESSAGE *internalMessage = Argument1;
+
+    struct LOG_QUEUE_DATA *data = ExAllocatePool2(POOL_FLAG_PAGED, sizeof(struct LOG_QUEUE_DATA), MEMORY_TAG);
+    if (!data) {
+        DPROCMON_KDPRINT("Failed to allocate data on heap");
+        ExFreePool(internalMessage);
+        return;
+    }
+
+    RtlCopyMemory(
+        data->CreatedProcessName,
+        internalMessage->CreatedProcessName,
+        sizeof(data->CreatedProcessName)
+    );
+    data->ProcessID = internalMessage->ProcessID;
+
+    ExFreePool(internalMessage);
+
+    DProcMonEnqueueProcessInfo(data);
+}
+#else
+VOID DProcMonOnCreateProcess(
     PEPROCESS Process,
     HANDLE ProcessId,
     PPS_CREATE_NOTIFY_INFO CreateInfo
@@ -433,6 +534,11 @@ void DProcMonOnCreateProcess(
     }
 
     struct LOG_QUEUE_DATA *data = ExAllocatePool2(POOL_FLAG_PAGED, sizeof(struct LOG_QUEUE_DATA), MEMORY_TAG);
+    if (!message) {
+        DPROCMON_KDPRINT("Failed to allocate message on heap");
+        return;
+    }
+
     // Note: we assume ascii process names, but if it isn't, we'll still handle it gracefully
     ANSI_STRING createdProcessName;
     NTSTATUS status = RtlUnicodeStringToAnsiString(&createdProcessName, CreateInfo->ImageFileName, TRUE);
@@ -454,6 +560,13 @@ void DProcMonOnCreateProcess(
     }
 	
     data->ProcessID = ProcessId;
+    
+    DProcMonEnqueueProcessInfo(data);
+}
+#endif  // USE_CALLBACKS
+
+
+VOID DProcMonEnqueueProcessInfo(struct LOG_QUEUE_DATA *data) {
     KeInsertQueue(&g_LogQueue, &data->ListEntry);
 
     LONG queueSize = InterlockedIncrement(&g_LoqQueueSize);
@@ -467,7 +580,6 @@ void DProcMonOnCreateProcess(
         }
     }
 }
-#endif  // !USE_CALLBACKS
 
 
 PLIST_ENTRY MyKeRemoveQueue(PRKQUEUE Queue) {

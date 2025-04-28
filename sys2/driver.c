@@ -7,6 +7,9 @@
 #include "internal.h"
 
 
+static PCALLBACK_OBJECT g_CallbackObject;
+
+
 NTSTATUS DriverEntry(
     _In_ PDRIVER_OBJECT DriverObject,
     _In_ PUNICODE_STRING RegistryPath
@@ -51,12 +54,36 @@ NTSTATUS DriverEntry(
     }
 
     #if USE_CALLBACKS
-    // TODO: Create callback
+    UNICODE_STRING callbackName = RTL_CONSTANT_STRING(CALLBACK_NAME);
+
+    OBJECT_ATTRIBUTES objectAttributes;
+    InitializeObjectAttributes(
+        &objectAttributes,
+        &callbackName,
+        OBJ_KERNEL_HANDLE | OBJ_PERMANENT | OBJ_CASE_INSENSITIVE,
+        NULL,
+        NULL
+    );
+
+    // Allow 1 and only 1 consumer, because we rely on them to free the allocated memory.
+    // If they aren't listening, memory is leaked, but in our situation the other driver
+    // subscribes to the callback almost immediately.
+    ntStatus = ExCreateCallback(&g_CallbackObject, &objectAttributes, TRUE, FALSE);
+    if (!NT_SUCCESS(ntStatus)) {
+        // Delete everything that this routine has allocated.
+        DPROCMON_KDPRINT("Couldn't create callback object\n");
+        IoDeleteSymbolicLink(&ntWin32NameString);
+        IoDeleteDevice(deviceObject);
+        return ntStatus;
+    }
 
     ntStatus = PsSetCreateProcessNotifyRoutineEx(DProcMon2OnCreateProcess, FALSE);
     if (!NT_SUCCESS(ntStatus)) {
         // Delete everything that this routine has allocated.
         DPROCMON_KDPRINT("Couldn't set up process creation callback\n");
+        //ObMakeTemporaryObject(g_CallbackObject);
+        ObDereferenceObject(g_CallbackObject);
+        g_CallbackObject = NULL;
         IoDeleteSymbolicLink(&ntWin32NameString);
         IoDeleteDevice(deviceObject);
         return ntStatus;
@@ -77,7 +104,9 @@ VOID DProcMon2UnloadDriver(
     #if USE_CALLBACKS
     PsSetCreateProcessNotifyRoutineEx(DProcMon2OnCreateProcess, TRUE);
 
-    // TODO: Destroy callback
+    //ObMakeTemporaryObject(g_CallbackObject);
+    ObDereferenceObject(g_CallbackObject);
+    g_CallbackObject = NULL;
     #endif  // USE_CALLBACKS
 
     // Create counted string version of our Win32 device name.
@@ -109,6 +138,11 @@ void DProcMon2OnCreateProcess(
     }
 
     struct DPROCMON_INTERNAL_MESSAGE *message = ExAllocatePool2(POOL_FLAG_PAGED, sizeof(struct DPROCMON_INTERNAL_MESSAGE), MEMORY_TAG);
+    if (!message) {
+        DPROCMON_KDPRINT("Failed to allocate message on heap");
+        return;
+    }
+    
     // Note: we assume ascii process names, but if it isn't, we'll still handle it gracefully
     ANSI_STRING createdProcessName;
     NTSTATUS status = RtlUnicodeStringToAnsiString(&createdProcessName, CreateInfo->ImageFileName, TRUE);
@@ -131,6 +165,6 @@ void DProcMon2OnCreateProcess(
 	
     message->ProcessID = ProcessId;
     
-    // TODO: Fire callback
+    ExNotifyCallback(g_CallbackObject, message, NULL);
 }
 #endif  // USE_CALLBACKS
