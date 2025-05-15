@@ -676,7 +676,7 @@ NTSTATUS DProcMonTerminateProcess(HANDLE ProcessID) {
 }
 
 
-NTSTATUS DProcMonOnRegistryNotify(
+NTSTATUS DProcMonRegistryNotify(
     PVOID CallbackContext,
     PVOID Argument1,
     PVOID Argument2
@@ -742,8 +742,9 @@ NTSTATUS DProcMonOnRegistryNotify(
 
         CmCallbackReleaseKeyObjectIDEx(keyPath);
         return STATUS_SUCCESS;
-    } __finally {
-        return STATUS_SUCCESS;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        DPROCMON_KDPRINT("Exception occurred in DProcMonRegistryNotify!\n");
+        return STATUS_SUCCESS;  // Still allow the registry operation
     }
 }
 
