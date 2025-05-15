@@ -7,6 +7,9 @@
 
 #define MEMORY_TAG 'DPRM'
 
+#define ALTITUDE             L"421234"
+#define BLOCKED_REGISTRY_KEY L"\\Registry\\Machine\\MyProtectedKey"
+
 #if DBG
 #define DPROCMON_KDPRINT(...)   \
     DbgPrint("DPROCMON.SYS: " __VA_ARGS__);
@@ -77,6 +80,8 @@ VOID DProcMonEnqueueProcessInfo(struct LOG_QUEUE_DATA *data);
 PLIST_ENTRY MyKeRemoveQueue(PRKQUEUE Queue);
 
 NTSTATUS DProcMonTerminateProcess(HANDLE ProcessID);
+
+PEX_CALLBACK_FUNCTION DProcMonRegistryNotify;
 
 VOID PrintIrpInfo(PIRP Irp);
 

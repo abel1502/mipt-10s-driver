@@ -56,7 +56,7 @@ BOOLEAN CreateFilterRegistryKeys(LPCSTR serviceName) {
     LONG status;
     DWORD value;
     const CHAR *defaultInstanceName = "DProcMonFilterInstance";
-    const CHAR *altitude = "380001";  // An unused value in the correct range
+    const CHAR *altitude = "421234";  // An unused value in the correct range
 
     CHAR instancesPath[512];
     snprintf(instancesPath, 512, "SYSTEM\\CurrentControlSet\\Services\\%s\\Instances", serviceName);

@@ -17,6 +17,8 @@ static PCALLBACK_OBJECT g_CallbackObject;
 static PVOID g_CallbackRegistrationHandle;
 #endif  // USE_CALLBACKS
 
+static LARGE_INTEGER g_RegistryCallbackCookie;
+
 #pragma region Minifilter
 static PFLT_FILTER g_FilterHandle = NULL;
 static PFLT_PORT g_ServerPort = NULL;
@@ -210,11 +212,39 @@ NTSTATUS DriverEntry(
     }
     #endif  // USE_CALLBACKS
 
+    UNICODE_STRING altitude = RTL_CONSTANT_STRING(ALTITUDE);
+
+    ntStatus = CmRegisterCallbackEx(
+        DProcMonRegistryNotify,
+        &altitude,
+        DriverObject,
+        NULL,
+        &g_RegistryCallbackCookie,
+        NULL
+    );
+
+    if (!NT_SUCCESS(ntStatus)) {
+        // Delete everything that this routine has allocated.
+        DPROCMON_KDPRINT("Couldn't register registry callback\n");
+        #if USE_CALLBACKS
+        ExUnregisterCallback(&g_CallbackRegistrationHandle);
+        g_CallbackRegistrationHandle = NULL;
+        ObDereferenceObject(g_CallbackObject);
+        g_CallbackObject = NULL;
+        #else
+        PsSetCreateProcessNotifyRoutineEx(DProcMonOnCreateProcess, TRUE);
+        #endif  // USE_CALLBACKS
+        IoDeleteSymbolicLink(&ntWin32NameString);
+        IoDeleteDevice(deviceObject);
+        return ntStatus;
+    }
+
     // Register a dummy filter
     ntStatus = FltRegisterFilter(DriverObject, &FilterRegistration, &g_FilterHandle);
     if (!NT_SUCCESS(ntStatus)) {
         // Delete everything that this routine has allocated.
         DPROCMON_KDPRINT("Couldn't register filter\n");
+        CmUnRegisterCallback(g_RegistryCallbackCookie);
         #if USE_CALLBACKS
         ExUnregisterCallback(&g_CallbackRegistrationHandle);
         g_CallbackRegistrationHandle = NULL;
@@ -237,6 +267,8 @@ NTSTATUS DriverEntry(
     if (!NT_SUCCESS(ntStatus)) {
         // Delete everything that this routine has allocated.
         DPROCMON_KDPRINT("Couldn't create security descriptor\n");
+        FltUnregisterFilter(g_FilterHandle);
+        CmUnRegisterCallback(g_RegistryCallbackCookie);
         #if USE_CALLBACKS
         ExUnregisterCallback(&g_CallbackRegistrationHandle);
         g_CallbackRegistrationHandle = NULL;
@@ -260,6 +292,8 @@ NTSTATUS DriverEntry(
     if (!NT_SUCCESS(ntStatus)) {
         // Delete everything that this routine has allocated.
         DPROCMON_KDPRINT("Couldn't create security descriptor\n");
+        FltUnregisterFilter(g_FilterHandle);
+        CmUnRegisterCallback(g_RegistryCallbackCookie);
         #if USE_CALLBACKS
         ExUnregisterCallback(&g_CallbackRegistrationHandle);
         g_CallbackRegistrationHandle = NULL;
@@ -291,6 +325,7 @@ NTSTATUS DriverEntry(
         // Delete everything that this routine has allocated.
         DPROCMON_KDPRINT("Couldn't create filter communication port\n");
         FltUnregisterFilter(g_FilterHandle);
+        CmUnRegisterCallback(g_RegistryCallbackCookie);
         #if USE_CALLBACKS
         ExUnregisterCallback(&g_CallbackRegistrationHandle);
         g_CallbackRegistrationHandle = NULL;
@@ -310,6 +345,7 @@ NTSTATUS DriverEntry(
         DPROCMON_KDPRINT("Couldn't start dummy filter\n");
         FltCloseCommunicationPort(g_ServerPort);
         FltUnregisterFilter(g_FilterHandle);
+        CmUnRegisterCallback(g_RegistryCallbackCookie);
         #if USE_CALLBACKS
         ExUnregisterCallback(&g_CallbackRegistrationHandle);
         g_CallbackRegistrationHandle = NULL;
@@ -333,6 +369,8 @@ VOID DProcMonUnloadDriver(
     PDEVICE_OBJECT deviceObject = DriverObject->DeviceObject;
 
     PAGED_CODE();
+
+    CmUnRegisterCallback(g_RegistryCallbackCookie);
 
     #if USE_CALLBACKS
     ExUnregisterCallback(g_CallbackRegistrationHandle);
@@ -501,7 +539,7 @@ VOID DProcMonPortProcessNotify(
 
     struct LOG_QUEUE_DATA *data = ExAllocatePool2(POOL_FLAG_PAGED, sizeof(struct LOG_QUEUE_DATA), MEMORY_TAG);
     if (!data) {
-        DPROCMON_KDPRINT("Failed to allocate data on heap");
+        DPROCMON_KDPRINT("Failed to allocate data on heap\n");
         ExFreePool(internalMessage);
         return;
     }
@@ -535,7 +573,7 @@ VOID DProcMonOnCreateProcess(
 
     struct LOG_QUEUE_DATA *data = ExAllocatePool2(POOL_FLAG_PAGED, sizeof(struct LOG_QUEUE_DATA), MEMORY_TAG);
     if (!message) {
-        DPROCMON_KDPRINT("Failed to allocate message on heap");
+        DPROCMON_KDPRINT("Failed to allocate message on heap\n");
         return;
     }
 
@@ -543,7 +581,7 @@ VOID DProcMonOnCreateProcess(
     ANSI_STRING createdProcessName;
     NTSTATUS status = RtlUnicodeStringToAnsiString(&createdProcessName, CreateInfo->ImageFileName, TRUE);
     if (!NT_SUCCESS(status)) {
-        DPROCMON_KDPRINT("Failed to convert process name to ANSI: %#08x", status);
+        DPROCMON_KDPRINT("Failed to convert process name to ANSI: %#08x\n", status);
         return;
     }
 
@@ -555,7 +593,7 @@ VOID DProcMonOnCreateProcess(
     );
     RtlFreeAnsiString(&createdProcessName);  // Regardless of success, we may free the old string now.
     if (!NT_SUCCESS(status)) {
-        DPROCMON_KDPRINT("Failed to copy process name to buffer: %#08x", status);
+        DPROCMON_KDPRINT("Failed to copy process name to buffer: %#08x\n", status);
         return;
     }
 	
@@ -635,6 +673,78 @@ NTSTATUS DProcMonTerminateProcess(HANDLE ProcessID) {
     ObDereferenceObject(Process);
 
     return status;
+}
+
+
+NTSTATUS DProcMonOnRegistryNotify(
+    PVOID CallbackContext,
+    PVOID Argument1,
+    PVOID Argument2
+) {
+    UNREFERENCED_PARAMETER(CallbackContext);
+
+    __try {
+        REG_NOTIFY_CLASS notifyClass = (REG_NOTIFY_CLASS)(ULONG_PTR)Argument1;
+
+        PUNICODE_STRING keyPath;
+        NTSTATUS status = STATUS_SUCCESS;
+
+        switch (notifyClass) {
+        case RegNtSetValueKey: {
+            PREG_SET_VALUE_KEY_INFORMATION setValueInfo = (PREG_SET_VALUE_KEY_INFORMATION)Argument2;
+            status = CmCallbackGetKeyObjectIDEx(
+                &g_RegistryCallbackCookie,
+                setValueInfo->Object,
+                NULL,
+                &keyPath,
+                0
+            );
+        } break;
+
+        case RegNtDeleteKey: {
+            PREG_DELETE_KEY_INFORMATION deleteKeyInfo = (PREG_DELETE_KEY_INFORMATION)Argument2;
+            status = CmCallbackGetKeyObjectIDEx(
+                &g_RegistryCallbackCookie,
+                deleteKeyInfo->Object,
+                NULL,
+                &keyPath,
+                0
+            );
+        } break;
+
+        case RegNtDeleteValueKey: {
+            PREG_DELETE_VALUE_KEY_INFORMATION deleteValueKeyInfo = (PREG_DELETE_VALUE_KEY_INFORMATION)Argument2;
+            status = CmCallbackGetKeyObjectIDEx(
+                &g_RegistryCallbackCookie,
+                deleteValueKeyInfo->Object,
+                NULL,
+                &keyPath,
+                0
+            );
+        } break;
+
+        default:
+            return STATUS_SUCCESS;
+        }
+
+        if (!NT_SUCCESS(status)) {
+            DPROCMON_KDPRINT("Failed to get registry key object ID: %#08x\n", status);
+            return STATUS_SUCCESS;
+        }
+
+        UNICODE_STRING blockedRegistryKey = RTL_CONSTANT_STRING(BLOCKED_REGISTRY_KEY);
+
+        if (RtlCompareUnicodeString(keyPath, &blockedRegistryKey, TRUE) == 0) {
+            DPROCMON_KDPRINT("Blocked registry operation on: %wZ\n", &keyPath);
+            CmCallbackReleaseKeyObjectIDEx(keyPath);
+            return STATUS_ACCESS_DENIED;
+        }
+
+        CmCallbackReleaseKeyObjectIDEx(keyPath);
+        return STATUS_SUCCESS;
+    } __finally {
+        return STATUS_SUCCESS;
+    }
 }
 
 
